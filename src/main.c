@@ -7,7 +7,7 @@
 #include "nrf24spiXM2.h"
 #include "nrf24L01.h"
 
-#define NRF_CHANNEL 1000
+#define NRF_CHANNEL 101
 #define MAXBUF 32
 #define TOON1_PER 1000
 #define TOON1_CCA 500
@@ -15,17 +15,24 @@
 #define TOON2_CCA 250
 #define TOONWISSELEN 200
 
-volatile uint8_t rx_flag = 0;
+#define PACKET_TYPE_EMERGENCY 0x03
 
-volatile uint8_t AlarmAan = 0;
+static volatile uint8_t rx_flag = 0;
 
-volatile uint16_t teller = 0;
-volatile uint8_t toon = 0;
+static volatile uint8_t AlarmAan = 0;
+static volatile uint16_t teller = 0;
+static volatile uint8_t toon = 0;
 
 uint8_t rx_packet[MAXBUF];
 
-uint8_t alarm_pipe [5] = "0pipe"; // De 0pipe luister alleen maar in principe en verstuurd geen data.
-uint8_t noodsieraad_pipe [5] = "1pipe"; // de 1pipe die verstuurt data en ontvang je via de 0pipe.
+uint8_t noodsieraad_pipe [5] = {'S','O','S','0','3'}; 
+
+typedef struct 
+{
+    uint8_t packet_type;
+    uint8_t emergency_active;
+} 
+emergency_packet_t;
 
 
 void nrf_init(void)
@@ -37,9 +44,9 @@ void nrf_init(void)
  nrfSetDataRate(NRF_RF_SETUP_RF_DR_250K_gc); // Datasnelheid is 250 kbps, als je lager kiest dan heb je groter bereik maar langzamer.
  nrfSetCRCLength(NRF_CONFIG_CRC_16_gc); // Zet foutcontrole op een 16-bit CRC, betrouwbaarder dan 8-bit.
  nrfSetChannel(NRF_CHANNEL); // Kiest de NRF channel die je al hebt gedefined.
- nrfSetAutoAck(1); // Ontvanger stuurt automatisch een bericht dat de data goed is ontvangen
+ nrfSetAutoAck(0); // Geen ACK nodig
  nrfEnableDynamicPayloads(); // Data wordt variabel.
- nrfClearInterruptsBits(); // verwijderd alle interrupt flags
+ nrfClearInterruptBits(); // verwijderd alle interrupt flags
  nrfFlushRx(); //Leegt de ontvangen data 
  nrfFlushTx(); //Leegt de verzonden data
  NRF24_IRQ_PORT.INT0MASK |= NRF24_IRQ_PIN; // Mask is welke pin een interrupt mag geven
@@ -49,13 +56,13 @@ void nrf_init(void)
  //INTCTRL is prioriteit stellen aan interrupt  
  //INT0LVL stelt het de prioriteit van de interrupt (dit geval is de interrupt een LOW priority)
 
- nrfOpenWritingPipe((uint8_t *) alarm_pipe); // Opent de pipe om data te versturen
  nrfOpenReadingPipe(0, (uint8_t *) noodsieraad_pipe); // Opent de pipe om data te ontvangen
+
  nrfPowerUp(); // Zet de NRF van standby op actief 
  nrfStartListening(); // begint met het luisteren naar de andere NRF om Data te ontvangen
 }
 
-ISR(PORTB_INT0_vect)
+ISR(NRF24_IRQ_VEC)
 {
   rx_flag = 1;
 }
@@ -63,7 +70,7 @@ ISR(PORTB_INT0_vect)
 ISR(TCE0_OVF_vect)
 {
 
-    if(alarmAan == 0) return;
+    if(AlarmAan == 0) return;
 
     teller++;
 
@@ -102,10 +109,15 @@ int main(void)
     TCE0.CTRLA = TC_CLKSEL_OFF_gc;      // start timer
     PMIC.CTRL |= PMIC_LOLVLEN_bm;
 
-    nrf_init();
-    sei();
+init_clock();
+init_stream(F_CPU);
 
-    while (1)
+PMIC.CTRL |= PMIC_LOLVLEN_bm;
+
+nrf_init();
+sei();
+printf("Ik ontvang nu signalen\r\n");
+ while (1)
     {
         if (rx_flag)
         {
@@ -113,27 +125,94 @@ int main(void)
 
             uint8_t AlarmPipe;
             if (nrfAvailable(&AlarmPipe))
-            { 
+            {
                 uint8_t length = nrfGetDynamicPayloadSize(); // vraagt op hoeveel bytes ontvangen zijn
+
+                if (length > MAXBUF)
+                {
+                    length = MAXBUF;
+                }
+
                 nrfRead(rx_packet, length); // leest de opgevraagde bytes uit
 
-                if(rx_packet[0] == 'TIJDELIJK' || rx_packet[0] == 'TIJDELIJK2') // MOET 1 LETTER ZIJN UITEINDELIJK
-                // Als 1 van de signalen binnenkomt gaat het alarm aan.
-                {
-                    alarmAan = 1;
-                    PORTD.OUTSET = PIN0_bm;
-                    TCE0.CTRLA = TC_CLKSEL_DIV8_gc;
-                    
-                    printf("Er is een noodgeval gedetecteerd!%c\n", rc_packet[0]);
+                printf("Pakket ontvangen, lengte = %u, pipe = %u\r\n", length, AlarmPipe);
 
-                }
+                // Controleer of het juiste pakket binnenkomt
+                if (length == sizeof(emergency_packet_t))
+                {
+                    emergency_packet_t *pkt = (emergency_packet_t *)rx_packet;
+
+                    if (pkt->packet_type == PACKET_TYPE_EMERGENCY)
+                    {
+                        if (pkt->emergency_active == 1U)
+                        {
+                            // Als noodsignaal binnenkomt gaat het alarm aan
+                            AlarmAan = 1;
+
+                            PORTD.OUTSET = PIN0_bm; // Solenoid AAN
+
+                            teller = 0;
+                            toon = 0;
+                            TCE0.PER = TOON1_PER;
+                            TCE0.CCA = TOON1_CCA;
+                            TCE0.CTRLA = TC_CLKSEL_DIV8_gc; // speaker / buzzer starten
+
+                            printf("Er is een noodgeval gedetecteerd!\r\n");
+                        }
+                        else
+                        {
+                            // Optioneel: alarm uitzetten als 0 binnenkomt
+                            AlarmAan = 0;
+
+                            PORTD.OUTCLR = PIN0_bm; // Solenoid UIT
+                            TCE0.CTRLA = TC_CLKSEL_OFF_gc; // speaker / buzzer stoppen
+
+                            printf("Noodsignaal UIT\r\n");
+                        }
+                    }
                     else
                     {
-                        printf("!!Ontvangen signaal is niet correct!!%c\n", rx_packet[0]);
+                        printf("!!Verkeerd packet type ontvangen!!\r\n");
                     }
+                }
+                else
+                {
+                    printf("!!Onbekende packet lengte: %u!!\r\n", length);
+                }
+
+                nrfClearInterruptBits();
             }
-            nrfClearInterruptsBits();
-        }   
+        }
     }
-  
 }
+//     while (1)
+//     {
+//         if (rx_flag)
+//         {
+//             rx_flag = 0;
+
+//             uint8_t AlarmPipe;
+//             if (nrfAvailable(&AlarmPipe))
+//             { 
+//                 uint8_t length = nrfGetDynamicPayloadSize(); // vraagt op hoeveel bytes ontvangen zijn
+//                 nrfRead(rx_packet, length); // leest de opgevraagde bytes uit
+
+//                 if(rx_packet[0] == 'TIJDELIJK' || rx_packet[0] == 'TIJDELIJK2') // MOET 1 LETTER ZIJN UITEINDELIJK
+//                 // Als 1 van de signalen binnenkomt gaat het alarm aan.
+//                 {
+//                     alarmAan = 1;
+//                     PORTD.OUTSET = PIN0_bm;
+//                     TCE0.CTRLA = TC_CLKSEL_DIV8_gc;
+                    
+//                     printf("Er is een noodgeval gedetecteerd!%c\n", rx_packet[0]);
+//                 }
+//                 else
+//                 {
+//                     printf("!!Ontvangen signaal is niet correct!!%c\n", rx_packet[0]);
+//                 }
+//             }
+//             nrfClearInterruptsBits();
+//         }   
+//     }
+
+// }

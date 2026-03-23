@@ -46,13 +46,13 @@
 
 /* SELECT THE DESIRED OPTION BELOW BY (UN)COMMENTING LINES */
 /* OPT1 : Onboard nRF24L01+ chip on the HvA-xmega board */
-//#define INTMOD_USARTC0
+#define INTMOD_USARTC0
 
 /* OPT2 : External nRF24L01+ module, USARTD0 */
 //#define EXTMOD_USARTD0
 
 /* OPT3 : External nRF24L01+ module, USARTD1 */
-#define EXTMOD_USARTD1
+//#define EXTMOD_USARTD1
 /* ~SELECT */
 
 
