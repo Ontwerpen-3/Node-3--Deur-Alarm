@@ -22,6 +22,7 @@ static volatile uint8_t rx_flag = 0;
 static volatile uint8_t AlarmAan = 0;
 static volatile uint16_t teller = 0;
 static volatile uint8_t toon = 0;
+static volatile uint16_t alarmDuur = 0;
 
 uint8_t rx_packet[MAXBUF];
 
@@ -37,29 +38,27 @@ emergency_packet_t;
 
 void nrf_init(void)
 {
- nrfspiInit(); // SPI Initialiseren
- nrfBegin(); // NRF op beginstand zetten
- nrfSetRetries(NRF_SETUP_ARD_1000US_gc, NRF_SETUP_ARC_8RETRANSMIT_gc); // 1000 microSecondes tussen tussen retries, Probeert 8 keer te verzend als faalt.
- nrfSetPALevel(NRF_RF_SETUP_PWR_6DBM_gc); // Zendvermogen is -6db (Hoe dichter bij de 0 hoe beter het signaal)
- nrfSetDataRate(NRF_RF_SETUP_RF_DR_250K_gc); // Datasnelheid is 250 kbps, als je lager kiest dan heb je groter bereik maar langzamer.
- nrfSetCRCLength(NRF_CONFIG_CRC_16_gc); // Zet foutcontrole op een 16-bit CRC, betrouwbaarder dan 8-bit.
- nrfSetChannel(NRF_CHANNEL); // Kiest de NRF channel die je al hebt gedefined.
- nrfSetAutoAck(0); // Geen ACK nodig
- nrfEnableDynamicPayloads(); // Data wordt variabel.
- nrfClearInterruptBits(); // verwijderd alle interrupt flags
- nrfFlushRx(); //Leegt de ontvangen data 
- nrfFlushTx(); //Leegt de verzonden data
- NRF24_IRQ_PORT.INT0MASK |= NRF24_IRQ_PIN; // Mask is welke pin een interrupt mag geven
- NRF24_IRQ_PORT.NRF24_IRQ_CTRL = PORT_ISC_FALLING_gc; // Zorgt ervoor dat een pin van hoog (1) naar laag (0) gaat.
+ nrfspiInit(); 
+ nrfBegin(); 
+ nrfSetRetries(NRF_SETUP_ARD_1000US_gc, NRF_SETUP_ARC_8RETRANSMIT_gc); 
+ nrfSetPALevel(NRF_RF_SETUP_PWR_6DBM_gc); 
+ nrfSetDataRate(NRF_RF_SETUP_RF_DR_250K_gc); 
+ nrfSetCRCLength(NRF_CONFIG_CRC_16_gc); 
+ nrfSetChannel(NRF_CHANNEL); 
+ nrfSetAutoAck(0); 
+ nrfEnableDynamicPayloads(); 
+ nrfClearInterruptBits(); 
+ nrfFlushRx();  
+ nrfFlushTx(); 
+ NRF24_IRQ_PORT.INT0MASK |= NRF24_IRQ_PIN; 
+ NRF24_IRQ_PORT.NRF24_IRQ_CTRL = PORT_ISC_FALLING_gc; 
 
  NRF24_IRQ_PORT.INTCTRL |= (NRF24_IRQ_PORT.INTCTRL & ~PORT_INT0LVL_gm) | PORT_INT0LVL_LO_gc;
- //INTCTRL is prioriteit stellen aan interrupt  
- //INT0LVL stelt het de prioriteit van de interrupt (dit geval is de interrupt een LOW priority)
 
- nrfOpenReadingPipe(0, (uint8_t *) noodsieraad_pipe); // Opent de pipe om data te ontvangen
+ nrfOpenReadingPipe(0, (uint8_t *) noodsieraad_pipe); 
 
- nrfPowerUp(); // Zet de NRF van standby op actief 
- nrfStartListening(); // begint met het luisteren naar de andere NRF om Data te ontvangen
+ nrfPowerUp(); 
+ nrfStartListening(); 
 }
 
 ISR(NRF24_IRQ_VEC)
@@ -69,44 +68,44 @@ ISR(NRF24_IRQ_VEC)
 
 ISR(TCE0_OVF_vect)
 {
-
-    if(AlarmAan == 0) return;
+    if (AlarmAan) alarmDuur++;
+    if (AlarmAan == 0) return;
 
     teller++;
 
-    if (teller >= TOONWISSELEN)   // wacht even voordat toon verandert
+    if (teller >= TOONWISSELEN)   
     {
         if (toon == 0)
         {
-            TCE0.PER = TOON1_PER;   // toon 1
+            TCE0.PER = TOON1_PER;  
             TCE0.CCA = TOON1_CCA;
             toon = 1;
         }
         else
         {
-            TCE0.PER = TOON2_PER;    // toon 2
+            TCE0.PER = TOON2_PER;    
             TCE0.CCA = TOON2_CCA;
             toon = 0;
         }
-
         teller = 0;
+       
     }
 }
 
 
 int main(void)
 {
-    // ===== Solenoid output (PD0) =====
+    
     PORTD.DIRSET = PIN0_bm;
     PORTD.OUTCLR = PIN0_bm;
     PMIC.CTRL |= PMIC_LOLVLEN_bm;
 
-    PORTE.DIRSET = PIN0_bm;   // PE0 output
+    PORTE.DIRSET = PIN0_bm;   
     TCE0.PER = TOON1_PER;
     TCE0.CCA = TOON1_CCA; 
     TCE0.CTRLB = TC_WGMODE_SS_gc | TC0_CCAEN_bm;
-    TCE0.INTCTRLA = TC_OVFINTLVL_LO_gc;   // overflow interrupt
-    TCE0.CTRLA = TC_CLKSEL_OFF_gc;      // start timer
+    TCE0.INTCTRLA = TC_OVFINTLVL_LO_gc;   
+    TCE0.CTRLA = TC_CLKSEL_OFF_gc;      
     PMIC.CTRL |= PMIC_LOLVLEN_bm;
 
 init_clock();
@@ -126,18 +125,18 @@ printf("Ik ontvang nu signalen\r\n");
             uint8_t AlarmPipe;
             if (nrfAvailable(&AlarmPipe))
             {
-                uint8_t length = nrfGetDynamicPayloadSize(); // vraagt op hoeveel bytes ontvangen zijn
+                uint8_t length = nrfGetDynamicPayloadSize(); 
 
                 if (length > MAXBUF)
                 {
                     length = MAXBUF;
                 }
 
-                nrfRead(rx_packet, length); // leest de opgevraagde bytes uit
+                nrfRead(rx_packet, length);
 
                 printf("Pakket ontvangen, lengte = %u, pipe = %u\r\n", length, AlarmPipe);
 
-                // Controleer of het juiste pakket binnenkomt
+                
                 if (length == sizeof(emergency_packet_t))
                 {
                     emergency_packet_t *pkt = (emergency_packet_t *)rx_packet;
@@ -146,26 +145,26 @@ printf("Ik ontvang nu signalen\r\n");
                     {
                         if (pkt->emergency_active == 1U)
                         {
-                            // Als noodsignaal binnenkomt gaat het alarm aan
+                            
                             AlarmAan = 1;
-
-                            PORTD.OUTSET = PIN0_bm; // Solenoid AAN
+                            alarmDuur = 0; 
+                            PORTD.OUTSET = PIN0_bm; 
 
                             teller = 0;
                             toon = 0;
                             TCE0.PER = TOON1_PER;
                             TCE0.CCA = TOON1_CCA;
-                            TCE0.CTRLA = TC_CLKSEL_DIV8_gc; // speaker / buzzer starten
+                            TCE0.CTRLA = TC_CLKSEL_DIV8_gc; 
 
                             printf("Er is een noodgeval gedetecteerd!\r\n");
                         }
                         else
                         {
-                            // Optioneel: alarm uitzetten als 0 binnenkomt
+                            
                             AlarmAan = 0;
 
-                            PORTD.OUTCLR = PIN0_bm; // Solenoid UIT
-                            TCE0.CTRLA = TC_CLKSEL_OFF_gc; // speaker / buzzer stoppen
+                            PORTD.OUTCLR = PIN0_bm; 
+                            TCE0.CTRLA = TC_CLKSEL_OFF_gc; 
 
                             printf("Noodsignaal UIT\r\n");
                         }
@@ -183,36 +182,12 @@ printf("Ik ontvang nu signalen\r\n");
                 nrfClearInterruptBits();
             }
         }
+        if (AlarmAan && alarmDuur >= 60000U)
+        {
+            AlarmAan = 0;
+            PORTD.OUTCLR = PIN0_bm;
+            TCE0.CTRLA = TC_CLKSEL_OFF_gc;
+            printf("Alarm gaat uit na 15 secondes\r\n");
+        }
     }
 }
-//     while (1)
-//     {
-//         if (rx_flag)
-//         {
-//             rx_flag = 0;
-
-//             uint8_t AlarmPipe;
-//             if (nrfAvailable(&AlarmPipe))
-//             { 
-//                 uint8_t length = nrfGetDynamicPayloadSize(); // vraagt op hoeveel bytes ontvangen zijn
-//                 nrfRead(rx_packet, length); // leest de opgevraagde bytes uit
-
-//                 if(rx_packet[0] == 'TIJDELIJK' || rx_packet[0] == 'TIJDELIJK2') // MOET 1 LETTER ZIJN UITEINDELIJK
-//                 // Als 1 van de signalen binnenkomt gaat het alarm aan.
-//                 {
-//                     alarmAan = 1;
-//                     PORTD.OUTSET = PIN0_bm;
-//                     TCE0.CTRLA = TC_CLKSEL_DIV8_gc;
-                    
-//                     printf("Er is een noodgeval gedetecteerd!%c\n", rx_packet[0]);
-//                 }
-//                 else
-//                 {
-//                     printf("!!Ontvangen signaal is niet correct!!%c\n", rx_packet[0]);
-//                 }
-//             }
-//             nrfClearInterruptsBits();
-//         }   
-//     }
-
-// }
